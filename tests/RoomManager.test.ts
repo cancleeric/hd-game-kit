@@ -221,4 +221,104 @@ describe('RoomManager', () => {
       expect(detach.value.room!.hostPlayerId).toBe(guestId);
     });
   });
+
+  // ── timing-safe token comparison ──────────────────────────────────────
+
+  describe('timing-safe token comparison', () => {
+    it('rejects reconnect with a token of wrong length', () => {
+      const created = mgr.createRoom('Alice');
+      if (!created.ok) throw new Error('setup failed');
+      const roomId = created.value.room.id;
+
+      // 31-char hex (one byte short of the 32-char token)
+      const shortToken = 'deadbeef00000000deadbeef0000000';
+      const res = mgr.reconnect(roomId, shortToken);
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error).toMatch(/token/i);
+    });
+
+    it('rejects reconnect with a correct-length but wrong token', () => {
+      const created = mgr.createRoom('Alice');
+      if (!created.ok) throw new Error('setup failed');
+      const roomId = created.value.room.id;
+
+      // 32-char hex but definitely wrong value
+      const wrongToken = 'deadbeef00000000deadbeef00000000';
+      const res = mgr.reconnect(roomId, wrongToken);
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error).toMatch(/token/i);
+    });
+
+    it('accepts reconnect with the correct token', () => {
+      const created = mgr.createRoom('Alice');
+      if (!created.ok) throw new Error('setup failed');
+      const { room: { id: roomId }, playerToken } = created.value;
+
+      const res = mgr.reconnect(roomId, playerToken);
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.value.playerId).toBe(1);
+    });
+
+    it('rejects joinRoom rejoin with a wrong-length token', () => {
+      const created = mgr.createRoom('Alice');
+      if (!created.ok) throw new Error('setup failed');
+      const roomId = created.value.room.id;
+
+      // Token that is 30 chars (too short)
+      const res = mgr.joinRoom(roomId, 'Alice', 'deadbeef00000000deadbeef000000');
+      // Short token does not match any player — treated as a fresh join attempt
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.value.isRejoin).toBe(false);
+    });
+
+    it('rejects joinRoom rejoin with a correct-length but wrong token', () => {
+      const created = mgr.createRoom('Alice');
+      if (!created.ok) throw new Error('setup failed');
+      const roomId = created.value.room.id;
+
+      const res = mgr.joinRoom(roomId, 'Alice', 'deadbeef00000000deadbeef00000000');
+      // Wrong token should not match existing player
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.value.isRejoin).toBe(false);
+    });
+  });
+
+  // ── randomRoomId entropy ──────────────────────────────────────────────
+
+  describe('randomRoomId (via createRoom)', () => {
+    it('generates 6-character room IDs', () => {
+      const res = mgr.createRoom('Player');
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.value.room.id).toHaveLength(6);
+    });
+
+    it('generates IDs using only the allowed alphabet', () => {
+      const ALPHABET = new Set('ABCDEFGHJKLMNPQRSTUVWXYZ23456789');
+      for (let i = 0; i < 20; i += 1) {
+        const res = mgr.createRoom('P');
+        if (!res.ok) throw new Error('createRoom failed');
+        for (const ch of res.value.room.id) {
+          expect(ALPHABET.has(ch)).toBe(true);
+        }
+      }
+    });
+  });
+
+  // ── leaveRoom toUpperCase normalisation ───────────────────────────────
+
+  describe('leaveRoom roomId normalisation', () => {
+    it('accepts lowercase roomId in leaveRoom', () => {
+      const created = mgr.createRoom('Alice');
+      if (!created.ok) throw new Error('setup failed');
+      const { room: { id: roomId }, playerId } = created.value;
+
+      mgr.joinRoom(roomId, 'Bob');
+      const leave = mgr.leaveRoom(roomId.toLowerCase(), playerId);
+      expect(leave.ok).toBe(true);
+    });
+  });
 });

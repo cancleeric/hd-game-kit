@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { RoomPlayer, RoomInfo } from './types.js';
 
 // ── Internal types ────────────────────────────────────────────────────────────
@@ -31,10 +31,21 @@ function randomToken(): string {
   return randomBytes(16).toString('hex');
 }
 
+/**
+ * Constant-time token comparison to prevent timing-side-channel attacks.
+ * Both inputs must be hex strings of equal length; unequal lengths return false
+ * without calling timingSafeEqual (length itself is not secret).
+ */
+function tokenEquals(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
+}
+
 function randomRoomId(): string {
+  const bytes = randomBytes(6);
   let id = '';
   for (let i = 0; i < 6; i += 1) {
-    id += ROOM_ID_ALPHABET[Math.floor(Math.random() * ROOM_ID_ALPHABET.length)];
+    id += ROOM_ID_ALPHABET[bytes[i]! % ROOM_ID_ALPHABET.length];
   }
   return id;
 }
@@ -153,7 +164,7 @@ export class RoomManager<TState = unknown> {
 
     // Token-based rejoin
     if (playerToken) {
-      const existing = room.players.find((p) => p.token === playerToken);
+      const existing = room.players.find((p) => tokenEquals(p.token, playerToken));
       if (existing) {
         existing.connected = true;
         return {
@@ -215,7 +226,7 @@ export class RoomManager<TState = unknown> {
       return { ok: false, error: 'Room not found for reconnect.' };
     }
 
-    const player = room.players.find((p) => p.token === playerToken);
+    const player = room.players.find((p) => tokenEquals(p.token, playerToken));
     if (!player) {
       return { ok: false, error: 'Reconnect token invalid.' };
     }
@@ -240,12 +251,15 @@ export class RoomManager<TState = unknown> {
    * - After game start: player is marked disconnected but kept in the room.
    *
    * Returns the updated RoomInfo, or null if the room was deleted.
+   *
+   * @security playerId MUST come from a server-side authenticated socket binding.
+   * ⛔ Never accept playerId from C2S message payload directly.
    */
   leaveRoom(
     roomId: string,
     playerId: number,
   ): RoomResult<{ room: RoomInfo | null }> {
-    const room = this.rooms.get(roomId);
+    const room = this.rooms.get(roomId.toUpperCase());
     if (!room) {
       return { ok: false, error: 'Room not found.' };
     }
@@ -283,6 +297,9 @@ export class RoomManager<TState = unknown> {
    * Mirrors server/index.js detachSocket logic:
    * - Pre-game: remove player, possibly delete room.
    * - In-game: keep player but mark disconnected, re-elect host if needed.
+   *
+   * @security playerId MUST come from a server-side authenticated socket binding.
+   * ⛔ Never accept playerId from C2S message payload directly.
    */
   detachPlayer(
     roomId: string,
@@ -336,6 +353,13 @@ export class RoomManager<TState = unknown> {
 
   // ── Game state ──────────────────────────────────────────────────────────
 
+  /**
+   * Overwrite the in-memory game state for a room.
+   *
+   * @security The roomId should be resolved from a server-side authenticated
+   * socket context. ⛔ Never accept roomId alone from C2S payload without
+   * verifying the caller is authorised to mutate this room.
+   */
   setGameState(roomId: string, gameState: TState): RoomResult<void> {
     const room = this.rooms.get(roomId);
     if (!room) return { ok: false, error: 'Room not found.' };
@@ -343,6 +367,15 @@ export class RoomManager<TState = unknown> {
     return { ok: true, value: undefined };
   }
 
+  /**
+   * Attempt to start the game; only succeeds if `hostPlayerId` matches the
+   * room's current host.
+   *
+   * @security hostPlayerId MUST come from a server-side authenticated socket
+   * binding. ⛔ Never accept hostPlayerId from C2S message payload directly.
+   * `state_update` authorisation (host guard) must be implemented by the
+   * calling layer — this kit does not enforce it.
+   */
   startGame(
     roomId: string,
     hostPlayerId: number,
