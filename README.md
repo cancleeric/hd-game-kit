@@ -8,29 +8,16 @@ HurricaneDigital shared game development kit — transport and room management u
 npm install @hd/game-kit
 ```
 
+## Subpaths
+
+| Subpath | Contents | Runtime |
+|---------|----------|---------|
+| `@hd/game-kit` | `WsTransport`, `ITransport`, room types | Browser / Node |
+| `@hd/game-kit/server` | `RoomManager`, `roomSummary`, all types | Node.js only |
+
 ## Modules
 
-### RoomManager
-
-Server-side in-memory room lifecycle manager.  Wire it up from your WebSocket server entry-point and call its methods from message handlers.
-
-```ts
-import { RoomManager } from '@hd/game-kit';
-
-const mgr = new RoomManager();
-
-// Host creates a room
-const result = mgr.createRoom('Alice');
-// result.value.playerToken  — unicast to Alice's socket only
-
-// Second player joins
-mgr.joinRoom(roomId, 'Bob');
-
-// Start the game
-mgr.startGame(roomId, hostPlayerId, initialState);
-```
-
-### WsTransport
+### WsTransport (browser)
 
 Browser-side WebSocket client with automatic exponential-backoff reconnection.
 
@@ -45,6 +32,26 @@ transport.send({ type: 'ready' });
 ```
 
 `connect(url)` — `url` must be a server-controlled trusted value; never derive it from user input or C2S payload.
+
+### RoomManager (server)
+
+Server-side in-memory room lifecycle manager. Depends on `node:crypto` — import from the `/server` subpath only.
+
+```ts
+import { RoomManager } from '@hd/game-kit/server';
+
+const mgr = new RoomManager();
+
+// Host creates a room
+const result = mgr.createRoom('Alice');
+// result.value.playerToken  — unicast to Alice's socket only
+
+// Second player joins
+mgr.joinRoom(roomId, 'Bob');
+
+// Start the game
+mgr.startGame(roomId, hostPlayerId, initialState);
+```
 
 ## Security
 
@@ -71,7 +78,7 @@ ws.on('message', (raw) => {
 
 ### playerToken single-cast rule
 
-`createRoom`, `joinRoom`, and `reconnect` all return a `playerToken` in their result value.  This token is a 16-byte cryptographically random credential.
+`createRoom`, `joinRoom`, and `reconnect` all return a `playerToken` in their result value.  This token is a 16-byte cryptographically random credential generated via `node:crypto` (server-side only).
 
 - Send it only as a **unicast** response to the requesting connection.
 - **Never broadcast** it to other players or include it in `state_update` / room-info messages.
