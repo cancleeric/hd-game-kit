@@ -1,0 +1,1 @@
+{"version":3,"file":"turnOrder.d.ts","sourceRoot":"","sources":["../../src/engine/turnOrder.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;GAaG;AAEH,OAAO,KAAK,EAAE,WAAW,EAAE,SAAS,EAAE,MAAM,YAAY,CAAC;AAEzD,wEAAwE;AACxE,qBAAa,cAAe,SAAQ,KAAK;gBAC3B,OAAO,EAAE,MAAM;CAI5B;AAED;;;;;;;;;GASG;AACH,wBAAgB,UAAU,CAAC,GAAG,EAAE,WAAW,EAAE,KAAK,CAAC,EAAE,SAAS,GAAG,MAAM,CA2BtE"}

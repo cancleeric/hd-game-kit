@@ -9,20 +9,36 @@
  *   - A `MoveFn` MUST be pure: it returns a NEW state and MUST NOT mutate its
  *     inputs. The reducer relies on this for determinism.
  *
- * NOTE: PR-1 deliberately does NOT implement phases / turn advancement; those
- * fields are reserved for PR-2. Only the minimal "given state + move → new
- * state" closed loop is provided here.
+ * PR-2 layers a full turn state machine on top of the PR-1 reducer. The game
+ * state `G` stays a pure domain value; turn / phase / victory are engine
+ * METADATA kept in a separate `ctx`, aligned with boardgame.io's `{ G, ctx }`
+ * match-state shape. The reducer now operates on `MatchState<G> = { G, ctx }`.
  */
 
 /**
- * Engine-supplied context handed to `setup` and every `MoveFn`.
+ * Engine-supplied context handed to `setup` and every `MoveFn`, and also the
+ * runtime metadata carried alongside the game state in a {@link MatchState}.
  *
- * PR-1 keeps this minimal and forward-compatible: `numPlayers` is known at
- * setup time. Turn/phase context is reserved for PR-2.
+ * `numPlayers` is fixed at setup time. `currentPlayer`, `phase` and `gameover`
+ * are engine-managed turn/phase/victory metadata, kept SEPARATE from the game
+ * state `G`.
  */
 export interface GameContext {
-  /** Number of players the match was set up for. */
+  /** Number of players the match was set up for (≥ 1). */
   readonly numPlayers: number;
+  /** Index of the player whose turn it is, 0-based in `[0, numPlayers)`. */
+  readonly currentPlayer: number;
+  /**
+   * Current phase id, or `null` when the game declares no phases (PR-1
+   * back-compat: every move is allowed and there is a single implicit phase).
+   */
+  readonly phase: string | null;
+  /**
+   * Victory result once the game is over, otherwise `null`. While non-null the
+   * reducer rejects all further moves. The value is whatever `def.victory`
+   * returned (e.g. a winning player id or marker).
+   */
+  readonly gameover: unknown | null;
 }
 
 /**
@@ -32,31 +48,64 @@ export interface GameContext {
  * thrown error as a rejected move (returns `{ ok: false }`), so a move may
  * `throw` to signal an illegal action.
  *
+ * The move receives the engine `ctx` (current player / phase) read-only; it
+ * MUST NOT try to advance the turn itself. Turn advancement is requested via
+ * the action's `events.endTurn` flag and applied by the engine (see
+ * {@link Action}).
+ *
  * @typeParam G - the game-specific state shape.
  */
 export type MoveFn<G> = (state: G, ctx: GameContext, payload?: unknown) => G;
 
 /**
+ * Turn-order strategy.
+ *
+ *   - `'sequential'`: advance to `(currentPlayer + 1) mod numPlayers` (wraps
+ *     back to player 0).
+ *   - a pure function `(ctx) => nextPlayer`: returns the next player index given
+ *     the post-move context. MUST be pure and return an integer in
+ *     `[0, numPlayers)`; an out-of-range / non-integer result is rejected by the
+ *     reducer.
+ */
+export type TurnOrder =
+  | 'sequential'
+  | ((ctx: GameContext) => number);
+
+/**
  * Turn configuration for a game definition.
  *
- * PR-1 only uses `minPlayers` / `maxPlayers` for contract validation. The
- * optional `order` field is reserved for PR-2 turn-order logic and is carried
- * through unvalidated for now.
+ * `minPlayers` / `maxPlayers` are used for contract validation. `order`
+ * selects the turn-order strategy (defaults to `'sequential'` when omitted).
  */
 export interface TurnConfig {
   /** Minimum number of players required (must be ≥ 1 and ≤ maxPlayers). */
   readonly minPlayers: number;
   /** Maximum number of players allowed (must be ≥ minPlayers). */
   readonly maxPlayers: number;
-  /** Reserved for PR-2 turn-order strategy. Unused in PR-1. */
-  readonly order?: unknown;
+  /** Turn-order strategy. Defaults to `'sequential'` when omitted. */
+  readonly order?: TurnOrder;
+}
+
+/**
+ * A phase declaration: which moves are allowed while in this phase, and the
+ * optional phase to transition to.
+ *
+ * `next`, when present, is recorded on the context after a move that ends the
+ * turn (i.e. phase transitions happen on turn boundaries, mirroring
+ * boardgame.io's phase/turn relationship). It MUST reference an existing phase.
+ */
+export interface PhaseConfig {
+  /** Move ids permitted while in this phase. Each MUST exist in `def.moves`. */
+  readonly moves: readonly string[];
+  /** Optional next phase id to move to on turn end. MUST be a declared phase. */
+  readonly next?: string;
 }
 
 /**
  * A game definition: the plug-in contract a game module implements.
  *
  * Shape intentionally aligned with boardgame.io (企劃 §5) so the engine's
- * internals can later borrow from it; PR-1 is fully self-built.
+ * internals can later borrow from it.
  *
  * @typeParam G - the game-specific state shape.
  */
@@ -70,33 +119,74 @@ export interface GameDefinition<G> {
   /** Turn / player-count configuration. */
   readonly turn: TurnConfig;
   /**
+   * Optional phases. When present, the reducer gates moves by phase: only the
+   * moves a phase declares are allowed while in it. When absent, all moves are
+   * allowed in the single implicit phase (PR-1 back-compat).
+   *
+   * The first key (insertion order) is the initial phase.
+   */
+  readonly phases?: Readonly<Record<string, PhaseConfig>>;
+  /**
    * Optional victory check. Returns the winning player (or any truthy winner
-   * marker), or `null` when there is no winner yet.
+   * marker), or `null` when there is no winner yet. Run after every successful
+   * move; a non-null result is written to `ctx.gameover`.
    */
   victory?(state: G): unknown | null;
 }
 
 /**
+ * The engine's match state: the pure game state `G` plus engine metadata
+ * `ctx`. Aligned with boardgame.io's `{ G, ctx }`. This is what the reducer
+ * consumes and produces.
+ *
+ * @typeParam G - the game-specific state shape.
+ */
+export interface MatchState<G> {
+  /** The pure, game-specific domain state. */
+  readonly G: G;
+  /** Engine-managed turn / phase / victory metadata. */
+  readonly ctx: GameContext;
+}
+
+/**
+ * Built-in engine events a caller may request alongside a move.
+ *
+ * Keeping turn advancement out of `MoveFn` preserves move purity: a move only
+ * computes the next `G`; the engine applies turn/phase transitions when the
+ * action asks for them.
+ */
+export interface ActionEvents {
+  /** When true, the move ends the current turn (advance player / phase). */
+  readonly endTurn?: boolean;
+}
+
+/**
  * An action dispatched to the reducer.
  *
- * `type` selects the move by id. `player` and `payload` are optional and
- * passed through to the move (and, in later PRs, used for authority checks).
+ * `type` selects the move by id. `player` is the acting player (reserved for
+ * authority checks in PR-3; the reducer carries it through). `events` requests
+ * engine-managed transitions such as ending the turn.
  */
 export interface Action {
   /** Move id; must match a key in `GameDefinition.moves`. */
   readonly type: string;
-  /** Optional acting player identifier. Reserved for PR-2/PR-3 authority. */
+  /** Optional acting player identifier. Reserved for PR-3 authority. */
   readonly player?: unknown;
   /** Optional move payload, passed verbatim to the `MoveFn`. */
   readonly payload?: unknown;
+  /** Optional engine events to apply after the move (e.g. `endTurn`). */
+  readonly events?: ActionEvents;
 }
 
 /**
  * Result of `reduce`: a discriminated union mirroring the kit's existing
  * `RoomResult` style (`{ ok: true, ... }` / `{ ok: false, error }`).
  *
+ * On success it returns the next {@link MatchState} (game state + updated
+ * engine context).
+ *
  * @typeParam G - the game-specific state shape.
  */
 export type ReduceResult<G> =
-  | { readonly ok: true; readonly state: G }
+  | { readonly ok: true; readonly state: MatchState<G> }
   | { readonly ok: false; readonly error: string };
