@@ -26,5 +26,6 @@
  */
 export { defineGame, initialPhase } from './defineGame.js';
 export { createMatch, reduce } from './reduce.js';
+export { validateMove } from './authority.js';
 export { nextPlayer, TurnOrderError } from './turnOrder.js';
 //# sourceMappingURL=index.js.map
