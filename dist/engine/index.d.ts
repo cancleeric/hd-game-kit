@@ -28,6 +28,6 @@ export { defineGame, initialPhase } from './defineGame.js';
 export { createMatch, reduce } from './reduce.js';
 export { validateMove } from './authority.js';
 export { nextPlayer, TurnOrderError } from './turnOrder.js';
-export type { Action, ActionEvents, GameContext, GameDefinition, MatchState, MoveFn, PhaseConfig, ReduceResult, TurnConfig, TurnOrder, } from './types.js';
+export type { Action, ActionEvents, GameContext, GameDefinition, MaskedState, MatchState, MoveFn, PhaseConfig, ReduceResult, TurnConfig, TurnOrder, } from './types.js';
 export type { ValidateResult } from './authority.js';
 //# sourceMappingURL=index.d.ts.map

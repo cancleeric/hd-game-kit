@@ -130,6 +130,11 @@ export function defineGame<G>(def: GameDefinition<G>): GameDefinition<G> {
     Object.freeze(def.phases);
   }
 
+  // ── viewFor (optional) ─────────────────────────────────────────────────────
+  if (def.viewFor !== undefined && typeof def.viewFor !== 'function') {
+    throw new Error('defineGame: viewFor must be a function when provided');
+  }
+
   // Freeze the contract surface so the definition is immutable after creation.
   // (Game-specific state `G` is not frozen here — that is the reducer's domain.)
   Object.freeze(def.moves);
