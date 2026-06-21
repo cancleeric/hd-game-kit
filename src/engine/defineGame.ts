@@ -135,6 +135,11 @@ export function defineGame<G>(def: GameDefinition<G>): GameDefinition<G> {
     throw new Error('defineGame: viewFor must be a function when provided');
   }
 
+  // ── enumerate (optional) ───────────────────────────────────────────────────
+  if (def.enumerate !== undefined && typeof def.enumerate !== 'function') {
+    throw new Error('defineGame: enumerate must be a function when provided');
+  }
+
   // Freeze the contract surface so the definition is immutable after creation.
   // (Game-specific state `G` is not frozen here — that is the reducer's domain.)
   Object.freeze(def.moves);

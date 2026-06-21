@@ -271,3 +271,47 @@ describe('makeRandomMove — no valid move edge case', () => {
     expect(r.reason).toBe('no valid move found');
   });
 });
+
+// ── test 6: enumerate contract validation (PR-4 / PR-1) ─────────────────────
+// Validates that defineGame enforces the enumerate contract.
+// PR-1 only adds the type and the defineGame check; bot enumerate-path tests
+// are deferred to PR-2 (bot.ts not yet modified).
+
+describe('defineGame — enumerate contract', () => {
+  it('accepts a valid function as enumerate', () => {
+    expect(() =>
+      defineGame<CounterState>({
+        name: 'counter-with-enumerate',
+        setup: () => ({ count: 0 }),
+        moves: {
+          inc: (s) => ({ count: s.count + 1 }),
+        },
+        turn: { minPlayers: 1, maxPlayers: 2 },
+        enumerate: (_match, _moveId, _playerId) => [],
+      }),
+    ).not.toThrow();
+  });
+
+  it('throws when enumerate is provided but is not a function', () => {
+    expect(() =>
+      defineGame<CounterState>({
+        name: 'counter-bad-enumerate',
+        setup: () => ({ count: 0 }),
+        moves: {
+          inc: (s) => ({ count: s.count + 1 }),
+        },
+        turn: { minPlayers: 1, maxPlayers: 2 },
+        // @ts-expect-error intentional contract violation for runtime test
+        enumerate: 'not-a-function',
+      }),
+    ).toThrow('defineGame: enumerate must be a function when provided');
+  });
+
+  it('omitting enumerate leaves existing game behaviour unchanged', () => {
+    // counterGame has no enumerate; makeRandomMove must still work as in R3.
+    const def = counterGame();
+    const match = createMatch(def, 2);
+    const r = makeRandomMove(def, match, 0);
+    expect(r.ok).toBe(true);
+  });
+});
