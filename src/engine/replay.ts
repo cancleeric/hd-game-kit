@@ -38,11 +38,23 @@ import type { GameDefinition, MatchState, MoveRecord } from './types.js';
  * Each snapshot carries its own `.log` (the subset of moves applied so far),
  * satisfying the time-travel invariant: `snapshots[k].log.length === k`.
  *
- * @param def        - the game definition (must be deterministic in `setup`).
- * @param log        - the ordered `MoveRecord[]` produced by the original match.
- * @param numPlayers - number of players. **MUST match the original match's
- *                     `numPlayers`**; the log does not store this value.
- *                     Defaults to `def.turn.minPlayers`.
+ * When `initialState` is provided, it is used as the starting state instead of
+ * calling createMatch(def, numPlayers). This resolves the known limitation
+ * (see module-level JSDoc) where non-deterministic setup (e.g. a random board
+ * shuffle that differs each call) would produce a diverging initial state.
+ *
+ * Backwards-compatible: omitting `initialState` preserves the existing behaviour
+ * (createMatch is called, def.setup must be deterministic).
+ *
+ * @param def          - the game definition (must be deterministic in `setup`
+ *                       unless `initialState` is provided).
+ * @param log          - the ordered `MoveRecord[]` produced by the original match.
+ * @param numPlayers   - number of players. **MUST match the original match's
+ *                       `numPlayers`**; the log does not store this value.
+ *                       Defaults to `def.turn.minPlayers`.
+ * @param initialState - optional captured initial MatchState<G>. When supplied,
+ *                       this is used verbatim as snapshots[0]; createMatch is
+ *                       NOT called.
  *
  * @returns ordered array of match-state snapshots, length = `log.length + 1`.
  *
@@ -50,17 +62,17 @@ import type { GameDefinition, MatchState, MoveRecord } from './types.js';
  *         message indicating which step failed.
  *
  * @remarks
- * **Replay assumes `def.setup` is deterministic**: the same `numPlayers` input
- * must always produce the same initial `G`. Games that use a non-deterministic
- * setup (e.g. a non-replayed seeded RNG) must capture the initial state
- * explicitly — this is a known limitation and a future enhancement.
+ * **Replay assumes `def.setup` is deterministic** unless `initialState` is
+ * supplied. Games that use a non-deterministic setup (e.g. a non-replayed seeded
+ * RNG) MUST capture and pass `initialState` to obtain a correct replay.
  */
 export function replayMatch<G>(
   def: GameDefinition<G>,
   log: readonly MoveRecord[],
   numPlayers: number = def.turn.minPlayers,
+  initialState?: MatchState<G>,
 ): MatchState<G>[] {
-  const initial = createMatch(def, numPlayers);
+  const initial = initialState ?? createMatch(def, numPlayers);
   const snapshots: MatchState<G>[] = [initial];
 
   let current = initial;
