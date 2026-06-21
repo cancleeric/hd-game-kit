@@ -320,6 +320,36 @@ The `enumerate` hook:
 The `EnumerateFn<G>` type alias and `EnumeratedAction` interface are exported
 from `@hd/game-kit/engine` for type-annotating separate enumerate functions.
 
+#### tic-tac-toe fixture — full enumerate with pass + fault-tolerance note
+
+The engine test fixture (`tests/engine/fixtures/tic-tac-toe.ts`) shows the
+complete pattern including `pass` and the fault-tolerance design intent:
+
+```ts
+enumerate(match, moveId, _playerId) {
+  if (moveId === 'place') {
+    // Return indices of all null (unoccupied) cells.
+    return (match.G as TicTacToeState).board
+      .map((cell, i) => (cell === null ? i : -1))
+      .filter((i) => i !== -1);
+  }
+  if (moveId === 'pass') {
+    // pass takes no payload; a single undefined lets the bot walk the
+    // enumerate path without guessing.
+    return [undefined];
+  }
+  return [];
+},
+```
+
+**Fault-tolerance**: even if `enumerate` over-enumerates (e.g. returns all 9
+cell indices including occupied ones), the bot's shuffle-try loop self-heals:
+`validateMove` rejects occupied cells, the bot tries the next shuffled
+candidate, and eventually lands on a legal cell. This means game authors can
+choose between strict enumeration (only null cells, fewer retries) and
+conservative over-enumeration (all cells, zero extra filtering logic) — both
+are correct; only the retry count differs.
+
 ## Security
 
 ### playerId trust assumption

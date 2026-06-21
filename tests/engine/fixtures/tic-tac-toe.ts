@@ -112,5 +112,35 @@ export function ticTacToe(): GameDefinition<TicTacToeState> {
       play: { moves: ['place', 'pass'] },
     },
     victory,
+
+    /**
+     * enumerate — payload candidates for the bot.
+     *
+     * 'place': all unoccupied cell indices (null cells) in row-major order.
+     *          An empty array means no legal placements remain (board full).
+     * 'pass':  [undefined] — pass takes no payload; the single undefined
+     *          candidate lets the bot walk the enumerate path without guessing.
+     * other:   [] — unknown move ids yield no candidates (bot skips them).
+     *
+     * Design note: returning only null cells means the bot never wastes shuffle
+     * attempts on occupied cells. However, even if enumerate returned all 9
+     * indices (including occupied ones), the bot's shuffle-try loop would
+     * self-heal: validateMove rejects occupied-cell placements, the bot
+     * automatically tries the next shuffled candidate, and eventually lands on
+     * a legal cell. This robustness is intentional and documented in the PR.
+     */
+    enumerate(match, moveId, _playerId) {
+      if (moveId === 'place') {
+        // Return the indices of all null (unoccupied) cells.
+        return (match.G as TicTacToeState).board
+          .map((cell, i) => (cell === null ? i : -1))
+          .filter((i) => i !== -1);
+      }
+      if (moveId === 'pass') {
+        // pass requires no payload; a single undefined lets the bot walk it.
+        return [undefined];
+      }
+      return [];
+    },
   });
 }

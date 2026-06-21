@@ -379,6 +379,80 @@ describe('engine e2e — bot self-play (makeRandomMove, deterministic rng)', () 
     expect(steps2).toBe(steps);                  // same trajectory length
   });
 
+  it('tic-tac-toe bot vs bot plays to a decided gameover (seed=42, deterministic)', () => {
+    // tic-tac-toe's `place` move requires an integer payload (cell index 0-8).
+    // With enumerate implemented on the fixture the bot can now enumerate the
+    // empty cells and select a legal one — this is the first PR-3 milestone:
+    // a payload-mandatory game completing a full bot vs bot match.
+    //
+    // Assertions:
+    //   A. Match always reaches ctx.gameover !== null within step limit.
+    //   B. Every step's action.payload is an integer in [0, 8].
+    //   C. No cell is placed on twice (board integrity).
+    //   D. With seed=42 the winner is identical across repeated runs.
+
+    const game = ticTacToe();
+
+    function runMatch(seed: number): {
+      gameover: unknown;
+      steps: number;
+      payloads: number[];
+    } {
+      let match = createMatch(game, 2);
+      const rng = makeLcgRng(seed);
+      let steps = 0;
+      const MAX_STEPS = 50; // at most 9 placements on a 3x3 board
+      const payloads: number[] = [];
+      const placedCells = new Set<number>();
+
+      while (match.ctx.gameover === null && steps < MAX_STEPS) {
+        const currentPlayer = match.ctx.currentPlayer;
+        const botResult = makeRandomMove(game, match, currentPlayer, rng);
+        expect(botResult.ok).toBe(true);
+        if (!botResult.ok) break;
+
+        // B. payload must be an integer in [0, 8] for 'place' moves.
+        if (botResult.action.type === 'place') {
+          const p = botResult.action.payload as number;
+          expect(Number.isInteger(p)).toBe(true);
+          expect(p).toBeGreaterThanOrEqual(0);
+          expect(p).toBeLessThanOrEqual(8);
+          // C. no cell placed twice.
+          expect(placedCells.has(p)).toBe(false);
+          placedCells.add(p);
+          payloads.push(p);
+        }
+
+        // Advance the turn so the engine rotates to the next player.
+        const action = { ...botResult.action, events: { endTurn: true } };
+        const r = reduce(game, match, action);
+        expect(r.ok).toBe(true);
+        if (!r.ok) break;
+        match = r.state;
+        steps++;
+      }
+
+      // A. Game must have terminated.
+      expect(match.ctx.gameover).not.toBe(null);
+      return { gameover: match.ctx.gameover, steps, payloads };
+    }
+
+    // First run.
+    const run1 = runMatch(42);
+    // gameover is a player index (0 | 1) or 'draw'.
+    expect(run1.gameover === 0 || run1.gameover === 1 || run1.gameover === 'draw').toBe(true);
+
+    // D. Second run with the same seed must be identical.
+    const run2 = runMatch(42);
+    expect(run2.gameover).toEqual(run1.gameover);
+    expect(run2.steps).toBe(run1.steps);
+    expect(run2.payloads).toEqual(run1.payloads);
+
+    // Third run with a different seed must still reach gameover (robustness).
+    const run3 = runMatch(7);
+    expect(run3.gameover).not.toBe(null);
+  });
+
   it('makeRandomMove refuses to act after gameover (tic-tac-toe)', () => {
     // Drive tic-tac-toe to a known gameover manually (no bot needed here;
     // tic-tac-toe moves require a payload that the bot cannot generate).
