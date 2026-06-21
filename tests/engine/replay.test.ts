@@ -1,7 +1,7 @@
 /**
  * tests/engine/replay.test.ts
  *
- * Unit tests for the `replayMatch` pure function (R6 PR-2).
+ * Unit tests for the `replayMatch` pure function (R6 PR-2 + Q2-3).
  *
  * T-R01 — empty log  → length 1 (only initial state)
  * T-R02 — N-step log → N+1 snapshots; each snapshot's G is readable
@@ -9,11 +9,15 @@
  * T-R04 — corrupted log entry → throws with step index in message
  * T-R05 — gameover state is preserved correctly through replay
  * T-R06 — snapshot[k].log.length === k (time-travel invariant)
+ * T-R07 — initialState (Q2-3): backward-compat when omitted
+ * T-R08 — initialState (Q2-3): injected state is used verbatim as snapshots[0]
+ * T-R09 — initialState (Q2-3): non-deterministic setup game replays correctly
+ * T-R10 — initialState (Q2-3): def.setup is NOT called when initialState supplied
  */
 
-import { describe, it, expect } from 'vitest';
-import { defineGame, createMatch, reduce, replayMatch } from '../../src/engine/index.js';
-import type { GameDefinition, MoveFn, MoveRecord } from '../../src/engine/index.js';
+import { describe, it, expect, vi } from 'vitest';
+import { defineGame, createMatch, createMatchFromState, reduce, replayMatch } from '../../src/engine/index.js';
+import type { GameDefinition, MatchState, MoveFn, MoveRecord } from '../../src/engine/index.js';
 import { ticTacToe } from './fixtures/tic-tac-toe.js';
 import type { TicTacToeState } from './fixtures/tic-tac-toe.js';
 
@@ -284,5 +288,154 @@ describe('T-R06: time-travel invariant — snapshot[k].log.length === k', () => 
     expect(snapshots[1]!.log).toHaveLength(1);
     expect(snapshots[2]!.log).toHaveLength(2);
     expect(snapshots[3]!.log).toHaveLength(3);
+  });
+});
+
+// ── T-R07 (Q2-3) ───────────────────────────────────────────────────────────
+
+describe('T-R07: backward-compat — omitting initialState preserves existing behaviour', () => {
+  it('3-step replay without initialState still matches direct reduce', () => {
+    const game = makeCounter();
+    const { log, finalState } = buildLog(game, [
+      { type: 'inc' },
+      { type: 'inc', payload: 2 },
+      { type: 'inc', payload: 10 },
+    ]);
+
+    const snapshots = replayMatch(game, log, 1);
+    expect(snapshots).toHaveLength(4);
+    expect(snapshots[3]!.G).toEqual(finalState.G);
+    expect(snapshots[3]!.ctx).toEqual(finalState.ctx);
+  });
+
+  it('empty log without initialState still returns initial createMatch state', () => {
+    const game = makeCounter();
+    const direct = createMatch(game, 1);
+    const snapshots = replayMatch(game, [], 1);
+    expect(snapshots[0]!.G).toEqual(direct.G);
+    expect(snapshots[0]!.ctx).toEqual(direct.ctx);
+  });
+});
+
+// ── T-R08 (Q2-3) ───────────────────────────────────────────────────────────
+
+describe('T-R08: initialState is used verbatim as snapshots[0]', () => {
+  it('snapshots[0] equals the provided initialState (same reference)', () => {
+    const game = makeCounter();
+    const customInitial: MatchState<CounterState> = createMatchFromState(
+      game,
+      { count: 100 },
+      1,
+    );
+
+    const snapshots = replayMatch(game, [], 1, customInitial);
+    expect(snapshots[0]).toBe(customInitial);
+  });
+
+  it('log entries are applied on top of the injected initialState', () => {
+    const game = makeCounter();
+    // Start from count=100, replay two inc moves
+    const customInitial: MatchState<CounterState> = createMatchFromState(
+      game,
+      { count: 100 },
+      1,
+    );
+
+    // Build log moves separately (using count=0 as base, we just want the log entries)
+    const { log } = buildLog(game, [
+      { type: 'inc', payload: 5 },
+      { type: 'inc', payload: 3 },
+    ]);
+
+    const snapshots = replayMatch(game, log, 1, customInitial);
+    expect(snapshots).toHaveLength(3);
+    expect(snapshots[0]!.G.count).toBe(100);
+    expect(snapshots[1]!.G.count).toBe(105);
+    expect(snapshots[2]!.G.count).toBe(108);
+  });
+});
+
+// ── T-R09 (Q2-3) ───────────────────────────────────────────────────────────
+
+describe('T-R09: non-deterministic setup game replays correctly with initialState', () => {
+  it('replay diverges without initialState, converges with it', () => {
+    // Simulate a game whose setup returns a different value each call (non-deterministic)
+    let callCount = 0;
+    const nondeterministicGame = defineGame<CounterState>({
+      name: 'nondeterministic',
+      setup: () => {
+        callCount += 1;
+        // Each call produces a different starting count
+        return { count: callCount * 10 };
+      },
+      moves: { inc },
+      turn: { minPlayers: 1, maxPlayers: 2 },
+    });
+
+    // Simulate original match: starts at count=10 (first setup call)
+    const originalInitial = createMatch(nondeterministicGame, 1);
+    expect(originalInitial.G.count).toBe(10); // callCount=1
+
+    // Apply one move on top of the original initial state
+    const r = reduce(nondeterministicGame, originalInitial, { type: 'inc', payload: 7 });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error(r.error);
+    const afterMove = r.state;
+    expect(afterMove.G.count).toBe(17);
+    const gameLog = afterMove.log;
+
+    // Without initialState: setup is called again → count starts at 20 (callCount=2)
+    const divergedSnapshots = replayMatch(nondeterministicGame, gameLog, 1);
+    // snapshots[0].G.count will be 20 (from second setup call), making final wrong
+    expect(divergedSnapshots[0]!.G.count).not.toBe(10); // diverged!
+    expect(divergedSnapshots[1]!.G.count).not.toBe(17); // result is wrong
+
+    // With initialState: setup is NOT called again, replay is correct
+    const correctSnapshots = replayMatch(nondeterministicGame, gameLog, 1, originalInitial);
+    expect(correctSnapshots[0]!.G.count).toBe(10);  // original start
+    expect(correctSnapshots[1]!.G.count).toBe(17);  // correct replay
+  });
+});
+
+// ── T-R10 (Q2-3) ───────────────────────────────────────────────────────────
+
+describe('T-R10: def.setup is NOT called when initialState is supplied', () => {
+  it('setup spy records zero calls when initialState is provided', () => {
+    const setupSpy = vi.fn((): CounterState => ({ count: 0 }));
+    const game = defineGame<CounterState>({
+      name: 'spy-replay-game',
+      setup: setupSpy,
+      moves: { inc },
+      turn: { minPlayers: 1, maxPlayers: 2 },
+    });
+
+    const injectedInitial: MatchState<CounterState> = {
+      G: { count: 42 },
+      ctx: {
+        numPlayers: 1,
+        currentPlayer: 0,
+        phase: null,
+        gameover: null,
+      },
+      log: [],
+    };
+
+    replayMatch(game, [], 1, injectedInitial);
+
+    expect(setupSpy).not.toHaveBeenCalled();
+  });
+
+  it('contrast: without initialState, setup IS called once', () => {
+    const setupSpy = vi.fn((): CounterState => ({ count: 0 }));
+    const game = defineGame<CounterState>({
+      name: 'spy-replay-game-b',
+      setup: setupSpy,
+      moves: { inc },
+      turn: { minPlayers: 1, maxPlayers: 2 },
+    });
+
+    replayMatch(game, [], 1);
+
+    expect(setupSpy).toHaveBeenCalledTimes(1);
   });
 });

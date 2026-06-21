@@ -65,6 +65,47 @@ export function createMatch<G>(
 }
 
 /**
+ * Build a MatchState<G> from an externally-provided initial game state `G`.
+ *
+ * Unlike createMatch, this function does NOT call def.setup(ctx); it uses
+ * the caller-supplied `G` directly. Useful when:
+ *   - The server holds a mid-game snapshot and needs to inject it into
+ *     the engine (Phase 2 server use case).
+ *   - A test fixture wants to start from a known G without going through setup.
+ *   - A future game whose setup() is non-deterministic (e.g. random shuffle)
+ *     needs to persist and later restore its initial state.
+ *
+ * @param def        - game definition (used for turn config + phase init only).
+ * @param G          - the initial game state to use verbatim.
+ * @param numPlayers - number of players. Must satisfy def.turn constraints.
+ * @returns MatchState<G> with the provided G, engine ctx, and empty log.
+ * @throws Error if numPlayers is out of def.turn range.
+ */
+export function createMatchFromState<G>(
+  def: GameDefinition<G>,
+  G: G,
+  numPlayers: number = def.turn.minPlayers,
+): MatchState<G> {
+  if (!Number.isInteger(numPlayers)) {
+    throw new Error('createMatchFromState: numPlayers must be an integer');
+  }
+  if (numPlayers < def.turn.minPlayers || numPlayers > def.turn.maxPlayers) {
+    throw new Error(
+      `createMatchFromState: numPlayers ${numPlayers} out of range ` +
+        `[${def.turn.minPlayers}, ${def.turn.maxPlayers}]`,
+    );
+  }
+
+  const ctx: GameContext = {
+    numPlayers,
+    currentPlayer: 0,
+    phase: initialPhase(def),
+    gameover: null,
+  };
+  return { G, ctx, log: [] };
+}
+
+/**
  * Whether `moveId` is permitted in the current phase.
  *
  * With no phases declared (`ctx.phase === null`), every move is allowed
