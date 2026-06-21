@@ -29,6 +29,7 @@ export { defineGame, initialPhase } from './defineGame.js';
 export { createMatch, reduce } from './reduce.js';
 export { validateMove } from './authority.js';
 export { nextPlayer, TurnOrderError } from './turnOrder.js';
+export { filterView, hasHiddenInfo } from './hiddenInfo.js';
 export type {
   Action,
   ActionEvents,
