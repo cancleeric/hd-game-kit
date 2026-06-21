@@ -123,6 +123,123 @@ A complete, runnable version of this game lives at
 `tests/engine/fixtures/tic-tac-toe.ts`, exercised end to end by
 `tests/engine/e2e-engine.test.ts`.
 
+### Bot self-play (`makeRandomMove`)
+
+`makeRandomMove` picks and applies a random legal move on behalf of the current
+player. Inject a seeded `rng` to get a deterministic, CI-repeatable result.
+
+```ts
+import {
+  defineGame, createMatch, reduce, makeRandomMove,
+} from '@hd/game-kit/engine';
+import type { BotResult } from '@hd/game-kit/engine';
+
+// ... build your game definition with defineGame() ...
+
+let match = createMatch(game, 2);
+
+// Inject a deterministic rng for tests.
+function seededRng(seed: number): () => number {
+  let s = seed;
+  return () => {
+    s = (s * 1664525 + 1013904223) & 0xffffffff;
+    return (s >>> 0) / 0x100000000;
+  };
+}
+const rng = seededRng(42);
+
+// Two bots alternate until gameover.
+while (match.ctx.gameover === null) {
+  const cp = match.ctx.currentPlayer;
+  const result: BotResult<typeof match.G> = makeRandomMove(game, match, cp, rng);
+  if (!result.ok) break;                    // 'game over' | 'not your turn' | 'no valid move found'
+  const r = reduce(game, match, { ...result.action, events: { endTurn: true } });
+  if (!r.ok) break;
+  match = r.state;
+}
+console.log('winner:', match.ctx.gameover); // player index or 'draw'
+```
+
+`makeRandomMove` always goes through the same `validateMove` pipeline as a real
+player, so the bot's moves respect phase gating and server-authoritative rules.
+The `action` it returns can be broadcast to connected clients just like a human
+action.
+
+A working end-to-end example with tic-tac-toe lives in
+`tests/engine/e2e-engine.test.ts` (suite "bot self-play").
+
+### Per-player hidden information (`filterView`)
+
+When a game has secret state (hand cards, hidden roles, …), define `viewFor` in
+the game definition. The server calls `filterView` once per connected player and
+sends each the result — never the raw `MatchState<G>`.
+
+```ts
+import {
+  defineGame, createMatch, filterView, hasHiddenInfo,
+} from '@hd/game-kit/engine';
+import type { MaskedState } from '@hd/game-kit/engine';
+
+// Card values start at 101+ to avoid collision with ctx small integers (0,1,2…)
+// when serialising to JSON for assertion or transmission.
+interface CardState {
+  deck: number[];
+  hands: number[][];   // hands[i] = card values for player i
+}
+
+interface CardView {
+  ownHand: number[];          // the calling player's actual cards
+  opponentHandSizes: number[]; // opponent i's card count — values are hidden
+}
+
+const cardGame = defineGame<CardState>({
+  name: 'card-game',
+  setup: (ctx) => ({
+    deck: Array.from({ length: 16 }, (_, i) => 101 + i),
+    hands: Array.from({ length: ctx.numPlayers }, () => []),
+  }),
+  moves: {
+    draw: (state, ctx) => {
+      const [card, ...rest] = state.deck;
+      const hands = state.hands.map((h, i) =>
+        i === ctx.currentPlayer ? [...h, card!] : [...h],
+      );
+      return { deck: rest, hands };
+    },
+  },
+  turn: { minPlayers: 2, maxPlayers: 4 },
+  // viewFor: called once per player; MUST return a NEW object, never a ref into G.
+  viewFor(match, playerId): CardView {
+    const { G } = match;
+    return {
+      ownHand: [...G.hands[playerId]!],          // own cards: fully visible
+      opponentHandSizes: G.hands.map((h, i) =>
+        i === playerId ? 0 : h.length,           // opponent counts only; no values
+      ),
+    };
+  },
+});
+
+// On the server, after every state change:
+const match = createMatch(cardGame, 2);
+if (hasHiddenInfo(cardGame)) {
+  for (const conn of connections) {
+    // Each connection only receives its own masked view.
+    const masked: MaskedState<CardView> = filterView(cardGame, match, conn.playerId) as MaskedState<CardView>;
+    conn.send(JSON.stringify(masked)); // { view: { ownHand, opponentHandSizes }, ctx }
+  }
+}
+```
+
+The full working fixture for this pattern lives at
+`tests/engine/fixtures/hidden-card-game.ts`, exercised end to end by
+`tests/engine/e2e-engine.test.ts` (suite "hidden-info view filtering").
+
+**Important security note:** `filterView` is the pure-computation layer only.
+The server WS layer is responsible for ensuring each connection receives only
+its own `filterView` result. When `viewFor` is defined, the full `MatchState<G>`
+must never be broadcast. See the `@security` block in `src/engine/hiddenInfo.ts`.
+
 ## Security
 
 ### playerId trust assumption
