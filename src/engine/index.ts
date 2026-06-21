@@ -34,6 +34,7 @@ export type {
   ActionEvents,
   GameContext,
   GameDefinition,
+  MaskedState,
   MatchState,
   MoveFn,
   PhaseConfig,

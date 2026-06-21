@@ -132,6 +132,32 @@ export interface GameDefinition<G> {
    * move; a non-null result is written to `ctx.gameover`.
    */
   victory?(state: G): unknown | null;
+
+  /**
+   * Optional per-player view filter for hidden-information games.
+   *
+   * When present, the engine knows that different players see different
+   * projections of `G` (e.g. a player's own hand but not their opponents').
+   * The server MUST call this function per-connection and MUST NOT broadcast
+   * the full `MatchState<G>` when this hook is defined.
+   *
+   * Contract:
+   *   - MUST be a pure function — MUST NOT mutate `match`.
+   *   - MUST return a NEW object (not a reference into `match.G`) so the
+   *     caller cannot accidentally expose the full state via shared references.
+   *   - Return type is `unknown` so each game can define its own view shape;
+   *     use {@link MaskedState} to carry the view alongside `ctx`.
+   *
+   * @param match    - the full, authoritative match state (server-side only).
+   * @param playerId - 0-based index of the player whose view is requested.
+   * @returns        a masked projection of `G` for `playerId`.
+   *
+   * @security Callers (server WS layer) are responsible for ensuring each
+   *           connection only receives its own `filterView` result.
+   *           This hook is the pure-computation layer; broadcast restriction
+   *           is enforced by the server layer (PR-2 implementation).
+   */
+  viewFor?(match: MatchState<G>, playerId: number): unknown;
 }
 
 /**
@@ -145,6 +171,26 @@ export interface MatchState<G> {
   /** The pure, game-specific domain state. */
   readonly G: G;
   /** Engine-managed turn / phase / victory metadata. */
+  readonly ctx: GameContext;
+}
+
+/**
+ * The per-player masked match state returned by `filterView` (PR-2).
+ *
+ * Carries the engine `ctx` (turn / phase / gameover — the same for all
+ * players) alongside the player-specific `view` (a masked projection of `G`
+ * that hides information the player is not entitled to see).
+ *
+ * Deliberately does NOT expose the full `G`; the type parameter `V` lets each
+ * game define a narrower view shape (e.g. `{ ownHand: Card[]; opponentCount:
+ * number }` instead of the full `{ hands: Card[][] }`).
+ *
+ * @typeParam V - the game-specific view shape for one player.
+ */
+export interface MaskedState<V> {
+  /** The masked, player-specific view of the game state. */
+  readonly view: V;
+  /** Engine-managed turn / phase / victory metadata (same for all players). */
   readonly ctx: GameContext;
 }
 
