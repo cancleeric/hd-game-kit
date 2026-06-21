@@ -329,11 +329,15 @@ describe('filterView — returns MaskedState when viewFor is present', () => {
     expect(result.view.ownHand).toEqual([11, 12, 13]);
   });
 
-  it('ctx is preserved from the original match', () => {
+  it('ctx is preserved (as a defensive copy) from the original match', () => {
     const def = defineGame(cardGameDef);
     const match = createMatch(def, 2);
     const result = filterView<CardG, CardView>(def, match, 0) as MaskedState<CardView>;
-    expect(result.ctx).toBe(match.ctx);
+    // ctx content (turn/phase/gameover) is preserved unchanged...
+    expect(result.ctx).toEqual(match.ctx);
+    // ...but it is a fresh object — the alias to the engine's ctx is severed so
+    // callers cannot mutate the engine (or another player's view) through it.
+    expect(result.ctx).not.toBe(match.ctx);
   });
 });
 

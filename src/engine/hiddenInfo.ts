@@ -75,7 +75,10 @@ export function filterView<G, V = unknown>(
     // so the caller cannot mutate the engine's ctx through our return value.
     return {
       view,
-      ctx: match.ctx,
+      // Spread ctx into a fresh object so the caller cannot mutate the engine's
+      // ctx (or another player's MaskedState.ctx) through this return value.
+      // ctx is non-sensitive (turn/phase/gameover) but this severs the alias.
+      ctx: { ...match.ctx },
     } satisfies MaskedState<V>;
   }
 
