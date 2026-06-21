@@ -17,7 +17,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { defineGame, createMatch, reduce } from '../../src/engine/index.js';
-import type { GameDefinition, MoveFn } from '../../src/engine/index.js';
+import type { GameDefinition, MoveFn, MoveRecord } from '../../src/engine/index.js';
 
 // ── A tiny game used across tests ──────────────────────────────────────────
 // State is a simple counter with a log of player ids that acted.
@@ -143,7 +143,7 @@ describe('reduce — applying a move', () => {
 
   it('passes payload through to the move', () => {
     const game = makeGame();
-    const match = { G: { count: 10, actors: [] }, ctx: createMatch(game, 1).ctx };
+    const match = { G: { count: 10, actors: [] }, ctx: createMatch(game, 1).ctx, log: [] };
     const result = reduce(game, match, { type: 'inc', payload: 5 });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -192,7 +192,7 @@ describe('reduce — rejection paths', () => {
 describe('reduce — determinism and purity', () => {
   it('is deterministic: same (match, action) twice → deep-equal results', () => {
     const game = makeGame();
-    const match = { G: { count: 7, actors: [1, 2] }, ctx: createMatch(game, 1).ctx };
+    const match = { G: { count: 7, actors: [1, 2] }, ctx: createMatch(game, 1).ctx, log: [] };
     const action = { type: 'inc', payload: 3 } as const;
 
     const r1 = reduce(game, match, action);
@@ -205,7 +205,7 @@ describe('reduce — determinism and purity', () => {
 
   it('does not mutate the input match/state (before/after snapshot)', () => {
     const game = makeGame();
-    const match = { G: { count: 7, actors: [1, 2] }, ctx: createMatch(game, 1).ctx };
+    const match = { G: { count: 7, actors: [1, 2] }, ctx: createMatch(game, 1).ctx, log: [] as MoveRecord[] };
     const snapshot = structuredClone(match);
 
     const result = reduce(game, match, { type: 'recordPlayer', payload: 9 });
@@ -225,7 +225,7 @@ describe('reduce — determinism and purity', () => {
       count: 1,
       actors: Object.freeze([4]) as number[],
     });
-    const match = { G: frozenG, ctx: createMatch(game, 1).ctx };
+    const match = { G: frozenG, ctx: createMatch(game, 1).ctx, log: [] as MoveRecord[] };
 
     // A pure move on frozen input must not throw (it must build a new object).
     const result = reduce(game, match, { type: 'recordPlayer', payload: 8 });
@@ -234,5 +234,96 @@ describe('reduce — determinism and purity', () => {
     if (!result.ok) return;
     expect(result.state.G.actors).toEqual([4, 8]);
     expect(frozenG.actors).toEqual([4]);
+  });
+});
+
+// ── reduce: move-log (MoveRecord append) ────────────────────────────────────
+
+describe('reduce — move-log (MoveRecord)', () => {
+  it('createMatch initialises log to an empty array', () => {
+    const game = makeGame();
+    const match = createMatch(game, 1);
+    expect(match.log).toEqual([]);
+  });
+
+  it('appends one MoveRecord after a successful move', () => {
+    const game = makeGame();
+    const match = createMatch(game, 1);
+    const result = reduce(game, match, { type: 'inc' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.state.log.length).toBe(1);
+  });
+
+  it('log[last].action.type matches the dispatched action type', () => {
+    const game = makeGame();
+    const match = createMatch(game, 1);
+    const result = reduce(game, match, { type: 'inc', payload: 3 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const last = result.state.log[result.state.log.length - 1];
+    expect(last.action.type).toBe('inc');
+    expect(last.action.payload).toBe(3);
+  });
+
+  it('log[last] records correct playerBefore and playerAfter (no endTurn)', () => {
+    const game = makeGame();
+    const match = createMatch(game, 2); // player 0 starts
+    const result = reduce(game, match, { type: 'inc' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const last = result.state.log[0];
+    // No endTurn — player stays the same
+    expect(last.playerBefore).toBe(0);
+    expect(last.playerAfter).toBe(0);
+    expect(last.phaseBefore).toBe(null);
+    expect(last.phaseAfter).toBe(null);
+  });
+
+  it('log[last] records playerAfter change when endTurn is requested (sequential)', () => {
+    const game = makeGame();
+    const match = createMatch(game, 2); // player 0 starts
+    const result = reduce(game, match, { type: 'inc', events: { endTurn: true } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const last = result.state.log[0];
+    expect(last.playerBefore).toBe(0);
+    expect(last.playerAfter).toBe(1); // sequential: player 1 is next
+  });
+
+  it('log grows by 1 per successful move across multiple steps', () => {
+    const game = makeGame();
+    let match = createMatch(game, 1);
+    for (let i = 1; i <= 3; i++) {
+      const result = reduce(game, match, { type: 'inc' });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      match = result.state;
+      expect(match.log.length).toBe(i);
+    }
+  });
+
+  it('failed reduce does not append to log', () => {
+    const game = makeGame();
+    const match = createMatch(game, 1);
+    const result = reduce(game, match, { type: 'boom' });
+    expect(result.ok).toBe(false);
+    // Original match log is still empty
+    expect(match.log.length).toBe(0);
+  });
+
+  it('reduce is a pure function: original match.log is not mutated', () => {
+    const game = makeGame();
+    const match = createMatch(game, 1);
+    const originalLog = match.log;
+    const result = reduce(game, match, { type: 'inc' });
+    expect(result.ok).toBe(true);
+    // The original log reference must not have changed
+    expect(match.log).toBe(originalLog);
+    expect(match.log.length).toBe(0);
+    // The new state has a different log array
+    if (!result.ok) return;
+    expect(result.state.log).not.toBe(originalLog);
+    expect(result.state.log.length).toBe(1);
   });
 });

@@ -23,6 +23,7 @@ import type {
   GameContext,
   GameDefinition,
   MatchState,
+  MoveRecord,
   ReduceResult,
 } from './types.js';
 
@@ -60,7 +61,7 @@ export function createMatch<G>(
     gameover: null,
   };
   const G = def.setup(ctx);
-  return { G, ctx };
+  return { G, ctx, log: [] };
 }
 
 /**
@@ -141,9 +142,17 @@ export function reduce<G>(
 
   // A finished game never advances turn/phase, regardless of endTurn.
   if (gameover !== null) {
+    const nextCtx = { ...ctx, gameover };
+    const record: MoveRecord = {
+      action: Object.freeze({ ...action }),
+      playerBefore: ctx.currentPlayer,
+      phaseBefore: ctx.phase,
+      playerAfter: nextCtx.currentPlayer,
+      phaseAfter: nextCtx.phase,
+    };
     return {
       ok: true,
-      state: { G: nextG, ctx: { ...ctx, gameover } },
+      state: { G: nextG, ctx: nextCtx, log: [...match.log, record] },
     };
   }
 
@@ -160,18 +169,35 @@ export function reduce<G>(
     }
 
     const nextPhase = phaseAfterTurn(def, ctx.phase);
+    const nextCtx = { ...ctx, currentPlayer: advancedPlayer, phase: nextPhase };
+    const record: MoveRecord = {
+      action: Object.freeze({ ...action }),
+      playerBefore: ctx.currentPlayer,
+      phaseBefore: ctx.phase,
+      playerAfter: nextCtx.currentPlayer,
+      phaseAfter: nextCtx.phase,
+    };
 
     return {
       ok: true,
       state: {
         G: nextG,
-        ctx: { ...ctx, currentPlayer: advancedPlayer, phase: nextPhase },
+        ctx: nextCtx,
+        log: [...match.log, record],
       },
     };
   }
 
   // ── no transition requested: same player, same phase ───────────────────────
-  return { ok: true, state: { G: nextG, ctx: { ...ctx } } };
+  const nextCtx = { ...ctx };
+  const record: MoveRecord = {
+    action: Object.freeze({ ...action }),
+    playerBefore: ctx.currentPlayer,
+    phaseBefore: ctx.phase,
+    playerAfter: nextCtx.currentPlayer,
+    phaseAfter: nextCtx.phase,
+  };
+  return { ok: true, state: { G: nextG, ctx: nextCtx, log: [...match.log, record] } };
 }
 
 /**

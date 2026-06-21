@@ -233,9 +233,36 @@ export interface EnumeratedAction {
 }
 
 /**
+ * A single entry in the match move-log: a snapshot of what happened in one
+ * successful `reduce()` call.
+ *
+ * `action` is the action that was applied (frozen, immutable). `playerBefore`
+ * and `phaseBefore` are the context values BEFORE the move was applied;
+ * `playerAfter` and `phaseAfter` are the context values AFTER (turn/phase
+ * advancement already applied). This lets callers time-travel or audit the
+ * full turn/phase history.
+ */
+export interface MoveRecord {
+  /** The action that was applied. Frozen to prevent post-hoc mutation. */
+  readonly action: Readonly<Action>;
+  /** `ctx.currentPlayer` before the move. */
+  readonly playerBefore: number;
+  /** `ctx.phase` before the move. */
+  readonly phaseBefore: string | null;
+  /** `ctx.currentPlayer` after the move (may differ if `endTurn` was set). */
+  readonly playerAfter: number;
+  /** `ctx.phase` after the move (may differ if the phase transitioned). */
+  readonly phaseAfter: string | null;
+}
+
+/**
  * The engine's match state: the pure game state `G` plus engine metadata
  * `ctx`. Aligned with boardgame.io's `{ G, ctx }`. This is what the reducer
  * consumes and produces.
+ *
+ * `log` is the ordered history of every successful move in this match. It is
+ * append-only (immutable); the reducer always produces a new array with the
+ * latest `MoveRecord` appended — it never mutates the existing log.
  *
  * @typeParam G - the game-specific state shape.
  */
@@ -244,6 +271,8 @@ export interface MatchState<G> {
   readonly G: G;
   /** Engine-managed turn / phase / victory metadata. */
   readonly ctx: GameContext;
+  /** Ordered history of every successful move applied to this match. */
+  readonly log: readonly MoveRecord[];
 }
 
 /**

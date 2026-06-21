@@ -45,7 +45,7 @@ export function createMatch(def, numPlayers = def.turn.minPlayers) {
         gameover: null,
     };
     const G = def.setup(ctx);
-    return { G, ctx };
+    return { G, ctx, log: [] };
 }
 /**
  * Whether `moveId` is permitted in the current phase.
@@ -112,9 +112,17 @@ export function reduce(def, match, action) {
     const gameover = def.victory !== undefined ? (def.victory(nextG) ?? null) : null;
     // A finished game never advances turn/phase, regardless of endTurn.
     if (gameover !== null) {
+        const nextCtx = { ...ctx, gameover };
+        const record = {
+            action: Object.freeze({ ...action }),
+            playerBefore: ctx.currentPlayer,
+            phaseBefore: ctx.phase,
+            playerAfter: nextCtx.currentPlayer,
+            phaseAfter: nextCtx.phase,
+        };
         return {
             ok: true,
-            state: { G: nextG, ctx: { ...ctx, gameover } },
+            state: { G: nextG, ctx: nextCtx, log: [...match.log, record] },
         };
     }
     // ── turn / phase advancement (only when the action asks to end the turn) ───
@@ -130,16 +138,33 @@ export function reduce(def, match, action) {
             throw err;
         }
         const nextPhase = phaseAfterTurn(def, ctx.phase);
+        const nextCtx = { ...ctx, currentPlayer: advancedPlayer, phase: nextPhase };
+        const record = {
+            action: Object.freeze({ ...action }),
+            playerBefore: ctx.currentPlayer,
+            phaseBefore: ctx.phase,
+            playerAfter: nextCtx.currentPlayer,
+            phaseAfter: nextCtx.phase,
+        };
         return {
             ok: true,
             state: {
                 G: nextG,
-                ctx: { ...ctx, currentPlayer: advancedPlayer, phase: nextPhase },
+                ctx: nextCtx,
+                log: [...match.log, record],
             },
         };
     }
     // ── no transition requested: same player, same phase ───────────────────────
-    return { ok: true, state: { G: nextG, ctx: { ...ctx } } };
+    const nextCtx = { ...ctx };
+    const record = {
+        action: Object.freeze({ ...action }),
+        playerBefore: ctx.currentPlayer,
+        phaseBefore: ctx.phase,
+        playerAfter: nextCtx.currentPlayer,
+        phaseAfter: nextCtx.phase,
+    };
+    return { ok: true, state: { G: nextG, ctx: nextCtx, log: [...match.log, record] } };
 }
 /**
  * The phase to be in after a turn ends. If the current phase declares `next`,
