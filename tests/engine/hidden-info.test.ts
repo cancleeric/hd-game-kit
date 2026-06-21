@@ -1,31 +1,34 @@
 /**
  * hidden-info.test.ts
  *
- * Unit tests for the PR-1 hidden-information type contract:
+ * Unit tests for the hidden-information system:
+ *
+ * PR-1 scope — type contract:
  *   - `viewFor?` optional hook on `GameDefinition<G>`
  *   - `MaskedState<V>` type
  *   - `defineGame` contract validation of the `viewFor` field
  *
- * PR-1 scope: TYPE CONTRACT ONLY.
- * `filterView()` is NOT implemented in this PR (that is PR-2).
- * These tests prove:
- *   (A) A definition WITH a valid `viewFor` function passes `defineGame`.
- *   (B) A definition with `viewFor` set to a non-function throws.
- *   (C) A definition WITHOUT `viewFor` continues to pass (back-compat).
- *   (D) The `viewFor` hook can be called directly and returns a masked view
- *       (smoke-testing the pure-function semantics without filterView).
+ * PR-2 scope — filterView() / hasHiddenInfo() implementation:
+ *   (F) filterView returns MaskedState<V> when viewFor is present.
+ *   (G) ATTACK VECTOR: filtered view for player N must not contain any
+ *       information belonging exclusively to other players.
+ *   (H) filterView returns original MatchState (deep-equal) when viewFor
+ *       is absent (backward-compatible passthrough).
+ *   (I) hasHiddenInfo returns true/false correctly.
+ *   (J) filterView does NOT mutate the match argument.
+ *   (K) filterView returns a new object on every call (no shared refs
+ *       between calls for the same playerId).
  *
  * Backward-compatibility guarantee:
- *   All 104 existing tests are unaffected — `viewFor` is an OPTIONAL field,
- *   existing game definitions without it pass unchanged.
+ *   All 119 existing tests are unaffected — new exports are additive only.
  */
 
 import { describe, it, expect } from 'vitest';
-import { defineGame, createMatch } from '../../src/engine/index.js';
+import { defineGame, createMatch, filterView, hasHiddenInfo } from '../../src/engine/index.js';
 import type {
   GameDefinition,
-  MatchState,
   MaskedState,
+  MatchState,
 } from '../../src/engine/index.js';
 
 // ---------------------------------------------------------------------------
@@ -237,5 +240,288 @@ describe('MaskedState type', () => {
     expect(masked.view.own).toBe(10);
     expect(masked.ctx.numPlayers).toBe(2);
     expect(masked.ctx.currentPlayer).toBe(0);
+  });
+});
+
+// ===========================================================================
+// PR-2: filterView() and hasHiddenInfo() — implementation tests
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Toy fixture for attack-vector tests: a card game where each player holds a
+// private hand. Only the hand owner may see the card VALUES; others see only
+// the hand SIZE.
+//
+// G = { hands: number[][] }   — hands[i] = card values for player i
+// View = { ownHand: number[]; opponentHandSizes: number[] }
+// ---------------------------------------------------------------------------
+
+interface CardG {
+  hands: number[][];
+}
+
+interface CardView {
+  ownHand: number[];
+  opponentHandSizes: number[];
+}
+
+const cardGameDef: GameDefinition<CardG> = {
+  name: 'card-game-hidden',
+  setup: (ctx) => ({
+    // Player i receives cards [i*10+1, i*10+2, i*10+3]
+    hands: Array.from({ length: ctx.numPlayers }, (_, i) => [
+      i * 10 + 1,
+      i * 10 + 2,
+      i * 10 + 3,
+    ]),
+  }),
+  moves: {
+    playCard: (state, _ctx, payload) => {
+      const { player, card } = payload as { player: number; card: number };
+      return {
+        hands: state.hands.map((hand, idx) =>
+          idx === player ? hand.filter((c) => c !== card) : hand,
+        ),
+      };
+    },
+  },
+  turn: { minPlayers: 2, maxPlayers: 4 },
+  viewFor(match: MatchState<CardG>, playerId: number): CardView {
+    return {
+      // Own cards: full values
+      ownHand: [...match.G.hands[playerId]],
+      // Opponents: only the count, NOT the values
+      opponentHandSizes: match.G.hands
+        .map((hand, idx) => (idx === playerId ? -1 : hand.length))
+        .filter((size) => size !== -1),
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// F) filterView returns MaskedState<CardView> when viewFor is present
+// ---------------------------------------------------------------------------
+
+describe('filterView — returns MaskedState when viewFor is present', () => {
+  it('returns an object with view and ctx keys for player 0', () => {
+    const def = defineGame(cardGameDef);
+    const match = createMatch(def, 2);
+    const result = filterView<CardG, CardView>(def, match, 0);
+    // Must be a MaskedState (has view and ctx), not a MatchState (has G and ctx)
+    expect(result).toHaveProperty('view');
+    expect(result).toHaveProperty('ctx');
+    expect(result).not.toHaveProperty('G');
+  });
+
+  it('view.ownHand contains the correct cards for player 0', () => {
+    const def = defineGame(cardGameDef);
+    const match = createMatch(def, 2);
+    const result = filterView<CardG, CardView>(def, match, 0) as MaskedState<CardView>;
+    // Player 0 cards: [1, 2, 3]
+    expect(result.view.ownHand).toEqual([1, 2, 3]);
+  });
+
+  it('view.ownHand contains the correct cards for player 1', () => {
+    const def = defineGame(cardGameDef);
+    const match = createMatch(def, 2);
+    const result = filterView<CardG, CardView>(def, match, 1) as MaskedState<CardView>;
+    // Player 1 cards: [11, 12, 13]
+    expect(result.view.ownHand).toEqual([11, 12, 13]);
+  });
+
+  it('ctx is preserved from the original match', () => {
+    const def = defineGame(cardGameDef);
+    const match = createMatch(def, 2);
+    const result = filterView<CardG, CardView>(def, match, 0) as MaskedState<CardView>;
+    expect(result.ctx).toBe(match.ctx);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G) ATTACK VECTOR: opponent card values MUST NOT appear in the view
+// ---------------------------------------------------------------------------
+
+describe('filterView — ATTACK VECTOR: opponent information must not leak', () => {
+  it('player 0 view does NOT contain player 1 card VALUES', () => {
+    const def = defineGame(cardGameDef);
+    // 2-player match: player 0 cards [1,2,3], player 1 cards [11,12,13]
+    const match = createMatch(def, 2);
+    const result = filterView<CardG, CardView>(def, match, 0) as MaskedState<CardView>;
+
+    // Serialise the entire result to string — player 1's card values (11,12,13)
+    // must NOT appear anywhere in the output.
+    const serialised = JSON.stringify(result);
+    expect(serialised).not.toContain('11');
+    expect(serialised).not.toContain('12');
+    expect(serialised).not.toContain('13');
+
+    // Must also not expose the full hands array
+    expect(serialised).not.toContain('"hands"');
+    expect(serialised).not.toContain('"G"');
+  });
+
+  it('player 1 view does NOT contain player 0 card VALUES', () => {
+    const def = defineGame(cardGameDef);
+    const match = createMatch(def, 2);
+    const result = filterView<CardG, CardView>(def, match, 1) as MaskedState<CardView>;
+
+    const serialised = JSON.stringify(result);
+    // Player 0's cards are 1, 2, 3 — but note "1" might appear in ctx
+    // (currentPlayer:0, numPlayers:2 etc.), so check for specific card values
+    // by checking ownHand only contains p1's cards and opponentHandSizes is counts-only.
+    expect(result.view.ownHand).toEqual([11, 12, 13]);
+    // opponentHandSizes should be [3] (p0 has 3 cards), not [1, 2, 3]
+    expect(result.view.opponentHandSizes).toEqual([3]);
+    expect(serialised).not.toContain('"hands"');
+    expect(serialised).not.toContain('"G"');
+  });
+
+  it('4-player match: each player only sees own hand values', () => {
+    const def = defineGame(cardGameDef);
+    const match = createMatch(def, 4);
+    // Player cards: p0=[1,2,3], p1=[11,12,13], p2=[21,22,23], p3=[31,32,33]
+
+    for (let pid = 0; pid < 4; pid++) {
+      const result = filterView<CardG, CardView>(def, match, pid) as MaskedState<CardView>;
+      const ownBase = pid * 10;
+      expect(result.view.ownHand).toEqual([ownBase + 1, ownBase + 2, ownBase + 3]);
+      // opponentHandSizes should have 3 entries, each = 3 (all opponents have 3 cards)
+      expect(result.view.opponentHandSizes).toEqual([3, 3, 3]);
+      // The raw full-G must not leak
+      const serialised = JSON.stringify(result);
+      expect(serialised).not.toContain('"G"');
+      expect(serialised).not.toContain('"hands"');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// H) filterView backward-compat: no viewFor → returns original MatchState
+// ---------------------------------------------------------------------------
+
+describe('filterView — backward-compat: no viewFor returns original MatchState', () => {
+  const plainDef: GameDefinition<{ x: number }> = {
+    name: 'plain-no-hidden',
+    setup: () => ({ x: 42 }),
+    moves: {
+      inc: (s) => ({ x: s.x + 1 }),
+    },
+    turn: { minPlayers: 1, maxPlayers: 2 },
+    // no viewFor
+  };
+
+  it('returns the same reference as the input match', () => {
+    const def = defineGame(plainDef);
+    const match = createMatch(def, 1);
+    const result = filterView(def, match, 0);
+    // For no-hidden-info games the exact same MatchState reference is returned
+    expect(result).toBe(match);
+  });
+
+  it('returned value is deep-equal to the input match', () => {
+    const def = defineGame(plainDef);
+    const match = createMatch(def, 1);
+    const result = filterView(def, match, 0);
+    expect(result).toEqual(match);
+  });
+
+  it('returned value has G and ctx (MatchState shape, NOT MaskedState)', () => {
+    const def = defineGame(plainDef);
+    const match = createMatch(def, 1);
+    const result = filterView(def, match, 0);
+    expect(result).toHaveProperty('G');
+    expect(result).toHaveProperty('ctx');
+    expect(result).not.toHaveProperty('view');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// I) hasHiddenInfo returns correct boolean
+// ---------------------------------------------------------------------------
+
+describe('hasHiddenInfo', () => {
+  it('returns true for a game that declares viewFor', () => {
+    const def = defineGame(cardGameDef);
+    expect(hasHiddenInfo(def)).toBe(true);
+  });
+
+  it('returns true for the hiddenGameDef fixture', () => {
+    const def = defineGame(hiddenGameDef);
+    expect(hasHiddenInfo(def)).toBe(true);
+  });
+
+  it('returns false for a game WITHOUT viewFor', () => {
+    const plainDef: GameDefinition<{ x: number }> = {
+      name: 'no-hidden-2',
+      setup: () => ({ x: 0 }),
+      moves: { noop: (s) => s },
+      turn: { minPlayers: 1, maxPlayers: 2 },
+    };
+    const def = defineGame(plainDef);
+    expect(hasHiddenInfo(def)).toBe(false);
+  });
+
+  it('returns false when viewFor is explicitly undefined', () => {
+    const defObj: GameDefinition<{ x: number }> = {
+      name: 'explicit-undef',
+      setup: () => ({ x: 0 }),
+      moves: { noop: (s) => s },
+      turn: { minPlayers: 1, maxPlayers: 2 },
+      viewFor: undefined,
+    };
+    const def = defineGame(defObj);
+    expect(hasHiddenInfo(def)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// J) filterView does NOT mutate the match argument
+// ---------------------------------------------------------------------------
+
+describe('filterView — purity: match must not be mutated', () => {
+  it('does not mutate match.G.hands after filterView call', () => {
+    const def = defineGame(cardGameDef);
+    const match = createMatch(def, 2);
+    const handsBefore = match.G.hands.map((h) => [...h]);
+    filterView(def, match, 0);
+    filterView(def, match, 1);
+    expect(match.G.hands).toEqual(handsBefore);
+  });
+
+  it('does not mutate match.ctx after filterView call', () => {
+    const def = defineGame(cardGameDef);
+    const match = createMatch(def, 2);
+    const ctxSnapshot = { ...match.ctx };
+    filterView(def, match, 0);
+    expect(match.ctx).toEqual(ctxSnapshot);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// K) filterView returns a NEW view object on each call (no shared references)
+// ---------------------------------------------------------------------------
+
+describe('filterView — no shared references between calls', () => {
+  it('two calls for the same playerId produce different view object references', () => {
+    const def = defineGame(cardGameDef);
+    const match = createMatch(def, 2);
+    const r1 = filterView<CardG, CardView>(def, match, 0) as MaskedState<CardView>;
+    const r2 = filterView<CardG, CardView>(def, match, 0) as MaskedState<CardView>;
+    // Different MaskedState objects
+    expect(r1).not.toBe(r2);
+    // Different view objects
+    expect(r1.view).not.toBe(r2.view);
+    // But values must be equal
+    expect(r1.view).toEqual(r2.view);
+  });
+
+  it('view.ownHand is NOT the same array reference as match.G.hands[playerId]', () => {
+    const def = defineGame(cardGameDef);
+    const match = createMatch(def, 2);
+    const result = filterView<CardG, CardView>(def, match, 0) as MaskedState<CardView>;
+    // ownHand must be a copy, not a live ref into match.G
+    expect(result.view.ownHand).not.toBe(match.G.hands[0]);
+    // But values must match
+    expect(result.view.ownHand).toEqual(match.G.hands[0]);
   });
 });
