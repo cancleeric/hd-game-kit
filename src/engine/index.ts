@@ -42,6 +42,7 @@ export type {
   MaskedState,
   MatchState,
   MoveFn,
+  MoveRecord,
   PhaseConfig,
   ReduceResult,
   TurnConfig,
