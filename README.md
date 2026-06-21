@@ -350,6 +350,74 @@ choose between strict enumeration (only null cells, fewer retries) and
 conservative over-enumeration (all cells, zero extra filtering logic) — both
 are correct; only the retry count differs.
 
+### Replay and time-travel (`replayMatch`)
+
+`replayMatch` reconstructs every intermediate `MatchState<G>` from the move-log
+produced by a live match. It is a pure function: no I/O, no side-effects.
+
+Use cases:
+- **time-travel debugging** — inspect the game state at any point in history,
+- **spectator replay** — feed ordered snapshots to a UI renderer,
+- **audit** — verify a recorded log is internally consistent.
+
+```ts
+import {
+  defineGame, createMatch, reduce, replayMatch,
+} from '@hd/game-kit/engine';
+import type { MoveRecord } from '@hd/game-kit/engine';
+
+// ... build your game definition with defineGame() ...
+
+// Play a match and collect the log
+let match = createMatch(game, 2);
+const r1 = reduce(game, match, { type: 'place', payload: 0, events: { endTurn: true } });
+if (r1.ok) match = r1.state;
+const r2 = reduce(game, match, { type: 'place', payload: 4, events: { endTurn: true } });
+if (r2.ok) match = r2.state;
+
+// The log lives on the final match state
+const log: readonly MoveRecord[] = match.log; // length 2
+
+// Replay: reconstruct every snapshot from the log
+// numPlayers MUST match the original match (log does not store it).
+const snapshots = replayMatch(game, log, 2);
+// snapshots.length === log.length + 1 (index 0 = initial, index k = after k moves)
+
+// Time-travel: inspect the state after move 1
+console.log(snapshots[1]?.G);      // state after the first move
+console.log(snapshots[0]?.G);      // initial state (before any move)
+console.log(snapshots[2]?.ctx);    // final ctx (currentPlayer, phase, gameover…)
+```
+
+**Return value:** `MatchState<G>[]` with length `log.length + 1`.
+- `snapshots[0]` — initial state (same as `createMatch(def, numPlayers)`).
+- `snapshots[k]` — state after the k-th log entry has been applied.
+- `snapshots[k].log.length === k` — time-travel invariant: each snapshot carries
+  the sub-log up to that point.
+
+**Corrupted log:** if any entry cannot be replayed (e.g. unknown move type,
+rejected payload), `replayMatch` throws with a message indicating which step
+failed.
+
+#### Known limitation: deterministic setup required
+
+`replayMatch` calls `createMatch(def, numPlayers)` to obtain the initial state.
+`def.setup` MUST be deterministic: the same `numPlayers` must always produce the
+same initial `G`. Games that use a non-deterministic setup (e.g. a non-replayed
+seeded RNG for card shuffling) will produce a diverging initial state.
+Capturing the initial state explicitly is a known future enhancement.
+
+#### numPlayers parameter
+
+The move-log (`MoveRecord[]`) does not store the original `numPlayers`. You
+**must** pass the same value that was used when the match was created. Defaults
+to `def.turn.minPlayers`.
+
+```ts
+// If you stored numPlayers alongside the log:
+const snapshots = replayMatch(game, savedLog, savedNumPlayers);
+```
+
 ## Security
 
 ### playerId trust assumption
