@@ -35,6 +35,8 @@ export type { BotResult } from './bot.js';
 export type {
   Action,
   ActionEvents,
+  EnumeratedAction,
+  EnumerateFn,
   GameContext,
   GameDefinition,
   MaskedState,

@@ -158,6 +158,78 @@ export interface GameDefinition<G> {
    *           is enforced by the server layer (PR-2 implementation).
    */
   viewFor?(match: MatchState<G>, playerId: number): unknown;
+
+  /**
+   * Optional payload enumerator hook for bot / AI support.
+   *
+   * When present, allows the bot ({@link makeRandomMove}) to enumerate all
+   * legal payload candidates for a given move, enabling automatic play for
+   * games where moves require a payload (e.g. placing a piece at a cell index,
+   * choosing a card from hand).
+   *
+   * Contract:
+   *   - MUST be a pure function — MUST NOT mutate `match`.
+   *   - MUST be deterministic: the same inputs always produce the same output
+   *     (required for reproducible bot play via seeded RNG).
+   *   - MAY return an empty array to indicate that `moveId` has no legal
+   *     payload candidates in the current state; the bot will skip that move.
+   *   - Payload values are opaque (`unknown`) — the bot passes them verbatim
+   *     to `validateMove`; the move function is the final arbiter.
+   *
+   * Games that do NOT implement `enumerate` continue to work exactly as in R3:
+   * `makeRandomMove` sends `undefined` as the payload, which is only valid for
+   * payload-free moves.
+   *
+   * @param match    - the full, authoritative match state.
+   * @param moveId   - the move id whose legal payloads are requested.
+   * @param playerId - 0-based index of the acting player.
+   * @returns        a readonly list of legal payload candidates for `moveId`.
+   *
+   * @see EnumerateFn for the standalone function-type alias.
+   * @see EnumeratedAction for the bot-internal candidate action shape.
+   */
+  enumerate?(
+    match: MatchState<G>,
+    moveId: string,
+    playerId: number,
+  ): readonly unknown[];
+}
+
+/**
+ * Function-type alias for the `enumerate?` hook in {@link GameDefinition}.
+ *
+ * Useful when a game author wants to type-annotate a separately-defined
+ * enumerate function before passing it into `defineGame`:
+ *
+ * @example
+ *   const myEnumerate: EnumerateFn<MyState> = (match, moveId, playerId) => {
+ *     if (moveId === 'place') return getValidCells(match.G);
+ *     return [];
+ *   };
+ *
+ * @typeParam G - the game-specific state shape.
+ */
+export type EnumerateFn<G> = (
+  match: MatchState<G>,
+  moveId: string,
+  playerId: number,
+) => readonly unknown[];
+
+/**
+ * A bot-internal candidate action produced by the enumerate path.
+ *
+ * Structurally compatible with {@link Action} but with an explicit `payload`
+ * (never undefined in this shape) and a required `player` field. The bot
+ * builds a list of `EnumeratedAction` values from the game's `enumerate` hook,
+ * shuffles them, and then passes each to `validateMove` until one succeeds.
+ */
+export interface EnumeratedAction {
+  /** Move id; matches a key in {@link GameDefinition.moves}. */
+  readonly type: string;
+  /** The payload candidate returned by `enumerate`. */
+  readonly payload: unknown;
+  /** 0-based index of the acting player. */
+  readonly player: number;
 }
 
 /**

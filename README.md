@@ -240,6 +240,86 @@ The server WS layer is responsible for ensuring each connection receives only
 its own `filterView` result. When `viewFor` is defined, the full `MatchState<G>`
 must never be broadcast. See the `@security` block in `src/engine/hiddenInfo.ts`.
 
+### enumerate hook — bot payload enumeration (R4)
+
+`enumerate?` is an optional hook on `GameDefinition<G>` that tells the bot
+which payloads are legal for each move in the current match state. Without it,
+`makeRandomMove` sends `undefined` as the payload (R3 behaviour), which only
+works for payload-free moves (e.g. `inc`, `dec`, `draw`). With it, the bot
+can automatically pick a valid payload for any move — placing a piece, choosing
+a cell index, selecting a card — without knowing the game's internal rules.
+
+**Games without `enumerate`** (backward-compatible, zero change needed):
+
+`makeRandomMove` behaves exactly as in R3: it sends `undefined` as the payload
+and relies on each move's own validation to reject invalid calls. If a move
+requires a payload, the bot will fail to find a valid action.
+
+**Games with `enumerate`** (R4 bot path, implemented in PR-2):
+
+The bot calls `enumerate(match, moveId, playerId)` for each candidate move,
+collects all returned payload values into a flat candidate list
+(`EnumeratedAction[]`), shuffles it with the injected `rng`, then tries each
+candidate through `validateMove` until one succeeds.
+
+```ts
+import { defineGame } from '@hd/game-kit/engine';
+import type { EnumerateFn, EnumeratedAction } from '@hd/game-kit/engine';
+
+interface TicTacToeState {
+  board: (number | null)[];   // 9 cells, null = empty
+  winner: number | null;
+}
+
+const game = defineGame<TicTacToeState>({
+  name: 'tic-tac-toe',
+  setup: () => ({ board: Array(9).fill(null), winner: null }),
+  moves: {
+    place: (state, ctx, payload) => {
+      if (typeof payload !== 'number' || !Number.isInteger(payload)) {
+        throw new Error('place: payload must be an integer cell index');
+      }
+      if (state.board[payload] !== null) {
+        throw new Error('place: cell already occupied');
+      }
+      const board = [...state.board];
+      board[payload] = ctx.currentPlayer;
+      return { ...state, board };
+    },
+  },
+  turn: { minPlayers: 2, maxPlayers: 2 },
+  // enumerate: returns all legal payload candidates for a given move.
+  // Contract: pure function, must not mutate match, must be deterministic.
+  enumerate(match, moveId, _playerId) {
+    if (moveId === 'place') {
+      // Return the index of every empty cell.
+      return match.G.board
+        .map((cell, i) => (cell === null ? i : -1))
+        .filter((i) => i !== -1);
+    }
+    return []; // unknown move — no candidates
+  },
+  victory: (state) => {
+    // ... check lines ...
+    return state.winner;
+  },
+});
+```
+
+The `enumerate` hook:
+
+- MUST be a pure function (no side effects, no mutation of `match`).
+- MUST be deterministic: identical inputs always produce identical outputs
+  (required for seeded-RNG reproducibility in CI).
+- MAY return an empty array — the bot will skip that move and try others.
+- Payloads are opaque (`unknown`); the move function is the final arbiter of
+  legality, so `enumerate` can conservatively over-enumerate (e.g. list all 9
+  cells even if some are occupied) and the bot will automatically skip invalid
+  ones via `validateMove`.
+
+The `EnumerateFn<G>` type alias and `EnumeratedAction` interface are exported
+from `@hd/game-kit/engine` for type-annotating separate enumerate functions.
+
 ## Security
 
 ### playerId trust assumption
