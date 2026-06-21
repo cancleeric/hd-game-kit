@@ -77,7 +77,42 @@ export function makeRandomMove(def, match, playerId, rng = Math.random) {
     if (candidates.length === 0) {
         return { ok: false, reason: 'no valid move found' };
     }
-    // ── 4. Fisher-Yates shuffle (copy first — do not mutate `candidates`) ────
+    // ── 4. enumerate path (when def.enumerate is present) ────────────────────
+    if (def.enumerate !== undefined) {
+        // Build a flat list of EnumeratedAction candidates across all legal moves.
+        const enumCandidates = [];
+        for (const moveId of candidates) {
+            const payloads = def.enumerate(match, moveId, playerId);
+            for (const payload of payloads) {
+                enumCandidates.push({ type: moveId, payload, player: playerId });
+            }
+            // enumerate returned [] for this moveId → skip (no candidates added)
+        }
+        if (enumCandidates.length === 0) {
+            return { ok: false, reason: 'no valid move found' };
+        }
+        // Fisher-Yates shuffle on enumCandidates (same rng, copy first)
+        const shuffledEnum = enumCandidates.slice();
+        for (let i = shuffledEnum.length - 1; i > 0; i--) {
+            const j = Math.floor(rng() * (i + 1));
+            const tmp = shuffledEnum[i];
+            shuffledEnum[i] = shuffledEnum[j];
+            shuffledEnum[j] = tmp;
+        }
+        // Try each candidate via the authority pipeline
+        for (const candidate of shuffledEnum) {
+            const action = { type: candidate.type, payload: candidate.payload, player: candidate.player };
+            const result = validateMove(def, match, action, playerId);
+            if (result.ok) {
+                return { ok: true, action, nextState: result.nextState };
+            }
+        }
+        // All enumerated candidates rejected
+        return { ok: false, reason: 'no valid move found' };
+    }
+    // ── 5. legacy path (no enumerate): Fisher-Yates on move ids ─────────────
+    //    Maintains exact R3 behaviour: sends undefined payload, only valid for
+    //    payload-free moves. ⛔ Do NOT change this path's semantics.
     const shuffled = candidates.slice();
     for (let i = shuffled.length - 1; i > 0; i--) {
         const j = Math.floor(rng() * (i + 1));
@@ -85,7 +120,7 @@ export function makeRandomMove(def, match, playerId, rng = Math.random) {
         shuffled[i] = shuffled[j];
         shuffled[j] = tmp;
     }
-    // ── 5. try each candidate via the authority pipeline ─────────────────────
+    // ── 6. try each candidate via the authority pipeline ─────────────────────
     for (const moveId of shuffled) {
         const action = { type: moveId, player: playerId };
         const result = validateMove(def, match, action, playerId);
@@ -93,7 +128,7 @@ export function makeRandomMove(def, match, playerId, rng = Math.random) {
             return { ok: true, action, nextState: result.nextState };
         }
     }
-    // ── 6. all candidates rejected (edge case) ────────────────────────────────
+    // ── 7. all candidates rejected (edge case) ────────────────────────────────
     return { ok: false, reason: 'no valid move found' };
 }
 //# sourceMappingURL=bot.js.map
