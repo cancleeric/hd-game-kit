@@ -29,6 +29,8 @@ export { createMatch, reduce } from './reduce.js';
 export { validateMove } from './authority.js';
 export { nextPlayer, TurnOrderError } from './turnOrder.js';
 export { filterView, hasHiddenInfo } from './hiddenInfo.js';
+export { makeRandomMove } from './bot.js';
+export type { BotResult } from './bot.js';
 export type { Action, ActionEvents, GameContext, GameDefinition, MaskedState, MatchState, MoveFn, PhaseConfig, ReduceResult, TurnConfig, TurnOrder, } from './types.js';
 export type { ValidateResult } from './authority.js';
 //# sourceMappingURL=index.d.ts.map
